@@ -1,0 +1,6 @@
+discord.py>=2.3.0
+transformers
+torch
+accelerate
+qwen-omni-utils
+python-dotenv
