@@ -1,3 +1,5 @@
 discord.py
-python-dotenv
+aiohttp
 requests
+python-dotenv
+langdetect
