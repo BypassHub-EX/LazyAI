@@ -1,0 +1,11 @@
+{
+  "user_memory": {
+    "user_id1": [ { "role":"user", "content":"..." }, { "role":"assistant", "content":"..." }, ... ],
+    "user_id2": [ … ]
+  },
+  "prefixes": {
+    "guild_id1": "hey lazy",
+    "guild_id2": "lazy,"
+  },
+  "auto_reply_channels": [channel_id1, channel_id2, ...]
+}
