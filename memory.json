@@ -1,11 +1,17 @@
 {
   "user_memory": {
-    "user_id1": [ { "role":"user", "content":"..." }, { "role":"assistant", "content":"..." }, ... ],
-    "user_id2": [ … ]
+    "123456789": [
+      { "role": "user", "content": "Hello" },
+      { "role": "assistant", "content": "Hi there!" }
+    ],
+    "987654321": []
   },
   "prefixes": {
-    "guild_id1": "hey lazy",
-    "guild_id2": "lazy,"
+    "123456": "hey lazy",
+    "987654": "lazy,"
   },
-  "auto_reply_channels": [channel_id1, channel_id2, ...]
+  "auto_reply_channels": [
+    "111111111111111111",
+    "222222222222222222"
+  ]
 }
