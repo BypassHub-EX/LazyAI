@@ -75,10 +75,17 @@ def clean_response(raw, prompt):
         return "⚠️ LazyAI couldn’t understand the reply."
 
 # =====================================
-# CORE HF QUERY
+# CORE HF QUERY WITH LANGUAGE CONTROL
 # =====================================
-async def query_hf(messages):
-    payload = {"model": MODEL_NAME, "messages": messages}
+async def query_hf(messages, lang="en"):
+    system_prompt = {
+        "role": "system",
+        "content": f"You are LazyAI, a friendly and smart Discord assistant. "
+                   f"Always reply in {lang} and keep the tone natural and conversational."
+    }
+
+    payload = {"model": MODEL_NAME, "messages": [system_prompt] + messages[-10:]}
+
     async with aiohttp.ClientSession() as session:
         async with session.post(API_URL, headers=HEADERS, json=payload) as resp:
             if resp.status == 200:
@@ -110,12 +117,13 @@ async def on_ready():
 async def ask(interaction: discord.Interaction, prompt: str):
     await interaction.response.defer()
     user_id = str(interaction.user.id)
+    lang = detect_language(prompt)
 
     if user_id not in user_memory:
         user_memory[user_id] = []
 
     user_memory[user_id].append({"role": "user", "content": prompt})
-    response = await query_hf(user_memory[user_id][-10:])
+    response = await query_hf(user_memory[user_id][-10:], lang)
     user_memory[user_id].append({"role": "assistant", "content": response})
     save_memory()
 
@@ -177,12 +185,13 @@ async def on_message(message):
 async def handle_message(message, prompt_override=None):
     prompt = prompt_override if prompt_override else message.content
     user_id = str(message.author.id)
+    lang = detect_language(prompt)
 
     if user_id not in user_memory:
         user_memory[user_id] = []
 
     user_memory[user_id].append({"role": "user", "content": prompt})
-    response = await query_hf(user_memory[user_id][-10:])
+    response = await query_hf(user_memory[user_id][-10:], lang)
     user_memory[user_id].append({"role": "assistant", "content": response})
     save_memory()
 
@@ -198,11 +207,12 @@ async def ping(ctx):
 @bot.command(name="lazy")
 async def lazy(ctx, *, prompt: str):
     user_id = str(ctx.author.id)
+    lang = detect_language(prompt)
     await ctx.send("🤔 LazyAI is thinking...")
     if user_id not in user_memory:
         user_memory[user_id] = []
     user_memory[user_id].append({"role": "user", "content": prompt})
-    reply = await query_hf(user_memory[user_id][-10:])
+    reply = await query_hf(user_memory[user_id][-10:], lang)
     user_memory[user_id].append({"role": "assistant", "content": reply})
     save_memory()
     await ctx.send(reply)
@@ -211,10 +221,11 @@ async def lazy(ctx, *, prompt: str):
 async def say_to(ctx, user: discord.User, *, message: str):
     mention = f"<@{user.id}>"
     uid = str(ctx.author.id)
+    lang = detect_language(message)
     if uid not in user_memory:
         user_memory[uid] = []
     user_memory[uid].append({"role": "user", "content": message})
-    reply = await query_hf(user_memory[uid][-10:])
+    reply = await query_hf(user_memory[uid][-10:], lang)
     user_memory[uid].append({"role": "assistant", "content": reply})
     save_memory()
     await ctx.send(f"{mention} 🧠 LazyAI says:\n{reply}")
