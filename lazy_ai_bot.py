@@ -16,7 +16,7 @@ DISCORD_TOKEN = os.getenv("DISCORD_TOKEN")
 HF_TOKEN = os.getenv("HF_TOKEN")
 
 API_URL = "https://router.huggingface.co/v1/chat/completions"
-MODEL_NAME = "Qwen/Qwen3-Omni-30B-A3B-Instruct"
+MODEL_NAME = "deepseek-ai/DeepSeek-V3.2-Exp:novita"
 MEMORY_FILE = "memory.json"
 
 HEADERS = {"Authorization": f"Bearer {HF_TOKEN}"}
