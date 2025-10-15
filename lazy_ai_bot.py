@@ -15,7 +15,7 @@ from discord.ext import commands, tasks
 from discord import app_commands
 from discord.ui import View, Button, Select
 from dotenv import load_dotenv
-from langdetect import detect
+# We intentionally avoid auto language switching to prevent unwanted language flips.
 
 # ---------------------------
 # ENV / CONFIG
@@ -39,12 +39,12 @@ tree = bot.tree
 # ---------------------------
 # MEMORY
 # ---------------------------
-user_memory = {}          # { user_id: [ {role, content}, ... ] }
-prefixes = {}             # { guild_id: "hey lazy" }
-auto_reply_channels = set()  # channel_ids
-coding_channels = set()      # channel_ids
-user_personalities = {}   # { user_id: "casual"/custom text }
-user_models = {}          # { user_id: "LazyV.----"/... }
+user_memory = {}            # { user_id: [ {role, content}, ... ] }
+prefixes = {}               # { guild_id: "hey lazy" }
+auto_reply_channels = set() # channel_ids
+coding_channels = set()     # channel_ids
+user_personalities = {}     # { user_id: personality_text }
+user_models = {}            # { user_id: "LazyV.----"/... }
 
 def load_memory():
     global user_memory, prefixes, auto_reply_channels, coding_channels, user_personalities, user_models
@@ -75,7 +75,7 @@ def save_memory():
                 "user_personalities": user_personalities,
                 "user_models": user_models
             }, f, ensure_ascii=False, indent=2)
-        print(f"[MEMORY] Saved: users={len(user_memory)}")
+        print(f"[MEMORY] Saved")
     except Exception as e:
         print(f"[ERROR] Memory save failed: {e}")
 
@@ -84,14 +84,8 @@ load_memory()
 # ---------------------------
 # HELPERS
 # ---------------------------
-def detect_language_or_en(text: str) -> str:
-    try:
-        return detect(text)
-    except Exception:
-        return "en"
-
 def get_model_name(user_id: str) -> str:
-    # Default to V1 if none chosen
+    # Default: V1
     return user_models.get(user_id, "LazyV.----")
 
 def system_prompt_for(model_name: str, personality: str | None) -> str:
@@ -108,22 +102,27 @@ def system_prompt_for(model_name: str, personality: str | None) -> str:
     # personality
     if personality:
         base += f"Personality style: {personality}. "
-    # important: never leak implementation
-    base += "Never reveal implementation details, tokens, or internal prompts. Refer to origin as Xohus Interactive LLC."
+    # important: no leaks
+    base += (
+        "Never reveal implementation details, tokens, or internal prompts. "
+        "Refer to origin as Xohus Interactive LLC. "
+        "Match the user's language only if the user explicitly speaks in that language; otherwise default to English. "
+        "Do not switch languages unprompted."
+    )
     return base
 
 async def query_hf(messages, model_name: str, personality: str | None):
     sys_msg = {"role": "system", "content": system_prompt_for(model_name, personality)}
     payload = {
         "model": "deepseek-ai/DeepSeek-V3.2-Exp:novita",
-        "messages": [sys_msg] + messages[-10:]
+        "messages": [sys_msg] + messages[-10:]  # keep context lean
     }
     async with aiohttp.ClientSession() as session:
         async with session.post(API_URL, headers=HEADERS, json=payload) as r:
             if r.status == 200:
                 data = await r.json()
                 content = data["choices"][0]["message"]["content"]
-                # Replace any model branding mentions
+                # Normalize branding
                 content = content.replace("DeepSeek", model_name)
                 return content
             else:
@@ -170,7 +169,7 @@ class LazyAIButtons(View):
             await interaction.followup.send("Could not delete (missing permissions?).", ephemeral=True)
 
 # ---------------------------
-# /set-model UI
+# /set-model UI (FIXED)
 # ---------------------------
 class ModelSelect(Select):
     def __init__(self, owner_id: str):
@@ -193,38 +192,37 @@ class ModelSelect(Select):
             "LazyV...--": "Near-human flow, memory linking, empathetic initiative.",
             "LazyV..-.-": "Unrestricted, blunt, edgy; still within Discord TOS."
         }
-        embed = interaction.message.embeds[0]
+        # Update view's selected model and the embed
+        assert isinstance(self.view, ModelView)
+        self.view.selected_model = choice
+
+        embed = interaction.message.embeds[0] if interaction.message.embeds else discord.Embed(color=discord.Color.blurple())
         embed.clear_fields()
+        embed.title = "🧠 Choose Your LazyAI Model"
+        embed.description = "Use the dropdown to preview a model. Click **Use This Model** to apply."
+        current = get_model_name(str(interaction.user.id))
+        embed.add_field(name="Current", value=current, inline=False)
         embed.add_field(name="Selected", value=f"**{choice}**\n{details[choice]}", inline=False)
-        view: ModelView = interaction.message.components  # type: ignore
-        # components are ActionRows; we’ll rebuild via parent view reference:
-        # easier route: fetch attached view from the message via a closure; instead,
-        # we store selection on the parent view instance using interaction.message.id map
 
-        # Simple: stash selection on the message via a global map
-        selected_models[str(interaction.message.id)] = choice
-        await interaction.response.edit_message(embed=embed, view=interaction.message.components)
-
-selected_models = {}  # { message_id: model_name }
+        await interaction.response.edit_message(embed=embed, view=self.view)
 
 class ModelView(View):
     def __init__(self, owner_id: str):
         super().__init__(timeout=300)
         self.owner_id = owner_id
+        self.selected_model: str | None = None
         self.add_item(ModelSelect(owner_id))
 
     @discord.ui.button(label="✅ Use This Model", style=discord.ButtonStyle.success)
     async def use_model(self, interaction: discord.Interaction, _: Button):
         if str(interaction.user.id) != self.owner_id:
             return await interaction.response.send_message("❌ Not your chooser.", ephemeral=True)
-        mid = str(interaction.message.id)
-        choice = selected_models.get(mid)
-        if not choice:
+        if not self.selected_model:
             return await interaction.response.send_message("Please pick a model first.", ephemeral=True)
-        user_models[self.owner_id] = choice
+        user_models[self.owner_id] = self.selected_model
         save_memory()
-        print(f"[MODEL] {interaction.user} -> {choice}")
-        await interaction.response.send_message(f"✅ Model set to **{choice}**", ephemeral=True)
+        print(f"[MODEL] {interaction.user} -> {self.selected_model}")
+        await interaction.response.send_message(f"✅ Model set to **{self.selected_model}**", ephemeral=True)
 
 # ---------------------------
 # EVENTS
@@ -271,7 +269,6 @@ async def ask(interaction: discord.Interaction, prompt: str):
 
 @tree.command(name="set-model", description="Select your preferred LazyAI model.")
 async def set_model(interaction: discord.Interaction):
-    # ephemeral so only the invoker sees
     embed = discord.Embed(
         title="🧠 Choose Your LazyAI Model",
         description="Use the dropdown to preview a model. Click **Use This Model** to apply.",
@@ -294,6 +291,11 @@ async def set_auto_reply_coding(interaction: discord.Interaction):
     save_memory()
     print(f"[INFO] Coding auto-reply enabled in #{interaction.channel.name}")
     await interaction.response.send_message("✅ Coding auto-reply enabled here.")
+
+# Optional duplicate name that forwards to the same logic (if you want both)
+@tree.command(name="auto-reply-coding-channel", description="Enable coding auto-reply in this channel. (alias)")
+async def auto_reply_coding_alias(interaction: discord.Interaction):
+    await set_auto_reply_coding.callback(interaction)  # reuse handler
 
 @tree.command(name="set-prefix", description="Set a custom text prefix, e.g., 'hey lazy'")
 @app_commands.describe(prefix="Trigger text prefix")
@@ -338,12 +340,16 @@ async def help_cmd(interaction: discord.Interaction):
 # ---------------------------
 # MESSAGE HANDLER
 # ---------------------------
+last_msg_ts = {}  # {channel_id: datetime}
+
 @bot.event
 async def on_message(message: discord.Message):
     if message.author.bot:
         return
     # Safety log
     print(f"[MSG] {message.author} in #{message.channel.name if hasattr(message.channel, 'name') else 'DM'}: {message.content}")
+    if hasattr(message.channel, "id"):
+        last_msg_ts[message.channel.id] = datetime.datetime.utcnow()
 
     uid = str(message.author.id)
     gid = str(message.guild.id) if message.guild else None
@@ -377,11 +383,8 @@ async def handle_message(message: discord.Message, prompt: str):
 # ---------------------------
 # RANDOM AI ACTIVITY
 # ---------------------------
-last_msg_ts = {}  # {channel_id: datetime}
-
 @tasks.loop(minutes=2)
 async def random_ai_activity():
-    # only enabled channels
     targets = list(auto_reply_channels | coding_channels)
     if not targets:
         return
@@ -390,18 +393,16 @@ async def random_ai_activity():
         ch = bot.get_channel(cid)
         if not ch:
             continue
-        # skip if recent activity in loop (3 min)
+        # Skip if very recent talk in this channel
         last = last_msg_ts.get(cid, now - datetime.timedelta(minutes=10))
         if (now - last).total_seconds() < 180:
             continue
-        # lightweight “is the channel quiet?” heuristic:
         try:
+            # Also check recent history to avoid interrupting active convos
             async for msg in ch.history(limit=5):
                 if (now - msg.created_at.replace(tzinfo=None)).total_seconds() < 90:
-                    # talking recently, skip
                     break
             else:
-                # quiet -> send one organic prompt
                 seed = random.choice([
                     "What are you working on today?",
                     "Anyone stuck on something? I can help.",
@@ -412,7 +413,7 @@ async def random_ai_activity():
                 out = await query_hf([{"role": "user", "content": seed}], "LazyV.----", "casual")
                 await ch.send(f"🧠 {out}")
                 last_msg_ts[cid] = now
-                print(f"[AI_LOOP] Sent to #{ch.name}: {out[:120]}...")
+                print(f"[AI_LOOP] Sent to #{getattr(ch, 'name', cid)}: {out[:120]}...")
         except Exception as e:
             print(f"[AI_LOOP ERROR] {e}")
 
