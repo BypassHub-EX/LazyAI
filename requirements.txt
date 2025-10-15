@@ -3,3 +3,4 @@ aiohttp
 requests
 python-dotenv
 langdetect
+flask
