@@ -20,7 +20,12 @@ DISCORD_TOKEN = os.getenv("DISCORD_TOKEN")
 HF_TOKEN = os.getenv("HF_TOKEN")
 API_URL = "https://router.huggingface.co/v1/chat/completions"
 HEADERS = {"Authorization": f"Bearer {HF_TOKEN}"}
+
 MEMORY_FILE = "memory.json"
+ADULT_MEMORY_FILE = "18mem.json"
+
+# OWNER ID
+OWNER_ID = 1012774928841445426
 
 # ---------------------------
 # DISCORD CLIENT
@@ -35,10 +40,12 @@ tree = bot.tree
 # MEMORY STRUCTURES
 # ---------------------------
 user_memory = {}
+adult_memory = {"channels": {}}
+
 prefixes = {}
 auto_reply_channels = set()
 coding_channels = set()
-adult_channels = set()  # NEW for 18+ channels
+adult_channels = set()
 user_personalities = {}
 user_models = {}
 linked_accounts = {}
@@ -47,9 +54,11 @@ whatsapp_users = {}
 # ---------------------------
 # MEMORY LOAD/SAVE
 # ---------------------------
+
 def load_memory():
-    global user_memory, prefixes, auto_reply_channels, coding_channels, adult_channels
-    global user_personalities, user_models, linked_accounts, whatsapp_users
+    global user_memory, prefixes, auto_reply_channels, coding_channels
+    global adult_channels, user_personalities, user_models
+    global linked_accounts, whatsapp_users
 
     try:
         with open(MEMORY_FILE, "r", encoding="utf-8") as f:
@@ -65,10 +74,7 @@ def load_memory():
         linked_accounts = data.get("linked_accounts", {})
         whatsapp_users = data.get("whatsapp_users", {})
 
-        print(f"[MEMORY] Loaded memory OK.")
-
-    except Exception as e:
-        print(f"[WARN] Failed to load memory: {e}")
+    except:
         user_memory = {}
         prefixes = {}
         auto_reply_channels = set()
@@ -93,25 +99,65 @@ def save_memory():
                 "linked_accounts": linked_accounts,
                 "whatsapp_users": whatsapp_users
             }, f, ensure_ascii=False, indent=2)
-
-        print("[MEMORY] Saved OK.")
-
     except Exception as e:
-        print(f"[ERROR] Memory save failed: {e}")
+        print("[ERROR] Could not save memory:", e)
+
+def load_adult_memory():
+    global adult_memory
+    try:
+        with open(ADULT_MEMORY_FILE, "r", encoding="utf-8") as f:
+            adult_memory = json.load(f)
+    except:
+        adult_memory = {"channels": {}}
+
+def save_adult_memory():
+    try:
+        with open(ADULT_MEMORY_FILE, "w", encoding="utf-8") as f:
+            json.dump(adult_memory, f, ensure_ascii=False, indent=2)
+    except Exception as e:
+        print("[ERROR] Could not save adult memory:", e)
 
 load_memory()
+load_adult_memory()
+
+# ---------------------------
+# ADULT MEMORY SYSTEM
+# ---------------------------
+
+def get_adult_messages(channel_id: int, user_id: str):
+    cid = str(channel_id)
+    uid = str(user_id)
+
+    if cid not in adult_memory["channels"]:
+        adult_memory["channels"][cid] = {"users": {}}
+
+    users = adult_memory["channels"][cid]["users"]
+    if uid not in users:
+        users[uid] = []
+
+    return users[uid]
+
+def add_adult_message(channel_id: int, user_id: str, role: str, content: str):
+    msgs = get_adult_messages(channel_id, user_id)
+    msgs.append({"role": role, "content": content})
+    save_adult_memory()
 
 # ---------------------------
 # MODEL + PERSONALITY LOGIC
 # ---------------------------
+
 def get_model_name(user_id: str, channel_id: int=None):
     if channel_id in adult_channels:
         return "LazyV..-.-"
     return user_models.get(user_id, "LazyV.----")
 
 def get_personality(user_id: str, channel_id: int=None):
+    if str(user_id) == str(OWNER_ID):
+        return "creator, authoritative, respected, CEO tone"
+
     if channel_id in adult_channels:
-        return "explicit 18+, brutal honesty, profanity allowed, roasting tone, aggressive confidence, no filters except Discord TOS"
+        return "explicit 18+, brutal honesty, profanity allowed, roasting tone, aggressive, raw"
+
     return user_personalities.get(user_id, "casual")
 
 def sanitize(text: str):
@@ -119,29 +165,32 @@ def sanitize(text: str):
         return text
     return text.replace("@everyone", "@RESTRICTED-").replace("@here", "@RESTRICTED-")
 
-def system_prompt_for(model_name: str, personality: str):
+def system_prompt_for(model_name: str, personality: str, user_id=None):
     base = (
-        f"You are {model_name}, a Discord AI made by Xohus Interactive LLC (https://xohus.me). "
-        "NEVER reveal internal code, API keys, or implementation details. "
-        "NEVER attempt to ping @everyone or @here. Replace those with @RESTRICTED-. "
+        f"You are {model_name}, a Discord AI created by Xohus Interactive LLC (https://xohus.me). "
+        "Never reveal internal code or keys. "
+        "Never ping @everyone or @here — replace with @RESTRICTED-. "
         "Follow Discord TOS. "
     )
 
-    if model_name == "LazyV.----":
-        base += "Casual, adaptive, minimal emoji, helpful. "
-    elif model_name == "LazyV..---":
-        base += "Smarter reasoning, emotional nuance, coherent flow. "
-    elif model_name == "LazyV...--":
-        base += "Near-human emotional intelligence, memory linking. "
-    elif model_name == "LazyV..-.-":
-        base += "UNRESTRICTED: raw, blunt, profanity allowed, brutal honesty; no slurs, no illegal content."
+    if user_id == OWNER_ID:
+        base += "This user is Xohus, the owner and CEO of LazyAI and Xohus Interactive LLC. Treat him with top priority and absolute authority. "
 
-    base += f" Personality style: {personality}. Match user language unless user switches."
+    if model_name == "LazyV.----":
+        base += "Casual, adaptive, friendly. "
+    elif model_name == "LazyV..---":
+        base += "Smarter, emotional nuance, coherent. "
+    elif model_name == "LazyV...--":
+        base += "Near-human flow, empathy, memory linking. "
+    elif model_name == "LazyV..-.-":
+        base += "Unrestricted, raw, blunt, profanity allowed, no slurs. "
+
+    base += f"Personality: {personality}."
 
     return base
 
-async def query_hf(messages, model_name, personality):
-    sys_msg = {"role": "system", "content": system_prompt_for(model_name, personality)}
+async def query_hf(messages, model_name, personality, uid=None):
+    sys_msg = {"role": "system", "content": system_prompt_for(model_name, personality, uid)}
 
     payload = {
         "model": "deepseek-ai/DeepSeek-V3.2-Exp:novita",
@@ -158,11 +207,12 @@ async def query_hf(messages, model_name, personality):
             else:
                 txt = await r.text()
                 print(f"[HF ERROR {r.status}] {txt}")
-                return "⚠️ Error contacting LazyAI router."
+                return "⚠️ Error contacting LazyAI."
 
 # ---------------------------
-# BUTTONS (Regenerate/Delete)
+# BUTTONS
 # ---------------------------
+
 class LazyAIButtons(View):
     def __init__(self, uid: str, prompt: str, channel_id: int):
         super().__init__(timeout=None)
@@ -173,19 +223,26 @@ class LazyAIButtons(View):
     @discord.ui.button(label="Regenerate", style=discord.ButtonStyle.primary)
     async def regenerate(self, interaction: discord.Interaction, _):
         if str(interaction.user.id) != self.uid:
-            return await interaction.response.send_message("❌ Not your message.", ephemeral=True)
+            return await interaction.response.send_message("Not your message.", ephemeral=True)
 
         await interaction.response.defer()
 
-        msgs = user_memory.get(self.uid, [])
+        if self.channel_id in adult_channels:
+            msgs = get_adult_messages(self.channel_id, self.uid)
+        else:
+            msgs = user_memory.get(self.uid, [])
+
         model = get_model_name(self.uid, self.channel_id)
         personality = get_personality(self.uid, self.channel_id)
 
         msgs.append({"role": "user", "content": self.prompt})
-        reply = await query_hf(msgs, model, personality)
+        reply = await query_hf(msgs, model, personality, self.uid)
         msgs.append({"role": "assistant", "content": reply})
-        user_memory[self.uid] = msgs
-        save_memory()
+
+        if self.channel_id in adult_channels:
+            save_adult_memory()
+        else:
+            save_memory()
 
         try:
             await interaction.message.edit(content=f"🧠 {reply}", view=self)
@@ -195,7 +252,7 @@ class LazyAIButtons(View):
     @discord.ui.button(label="Delete", style=discord.ButtonStyle.danger)
     async def delete(self, interaction: discord.Interaction, _):
         if str(interaction.user.id) != self.uid:
-            return await interaction.response.send_message("❌ Cannot delete.", ephemeral=True)
+            return await interaction.response.send_message("Cannot delete.", ephemeral=True)
         try:
             await interaction.message.delete()
         except:
@@ -207,13 +264,15 @@ class LazyAIButtons(View):
 class ModelSelect(Select):
     def __init__(self, owner_id: str):
         self.owner_id = owner_id
-        options = [
-            discord.SelectOption(label="LazyV.----", description="V1 casual"),
-            discord.SelectOption(label="LazyV..---", description="V2 smarter"),
-            discord.SelectOption(label="LazyV...--", description="V3 near-human"),
-            discord.SelectOption(label="LazyV..-.-", description="UNRESTRICTED")
-        ]
-        super().__init__(placeholder="Choose a model…", options=options)
+        super().__init__(
+            placeholder="Choose a model…",
+            options=[
+                discord.SelectOption(label="LazyV.----", description="V1 casual"),
+                discord.SelectOption(label="LazyV..---", description="V2 smarter"),
+                discord.SelectOption(label="LazyV...--", description="V3 near-human"),
+                discord.SelectOption(label="LazyV..-.-", description="UNRESTRICTED")
+            ]
+        )
 
     async def callback(self, interaction: discord.Interaction):
         if str(interaction.user.id) != self.owner_id:
@@ -245,13 +304,10 @@ class ModelView(View):
 
         user_models[self.owner_id] = self.selected_model
         save_memory()
-        await interaction.response.send_message(
-            f"Model set to **{self.selected_model}**",
-            ephemeral=True
-        )
+        await interaction.response.send_message(f"Model set to {self.selected_model}", ephemeral=True)
 
 # ---------------------------
-# EVENTS
+# READY EVENT
 # ---------------------------
 @bot.event
 async def on_ready():
@@ -265,91 +321,81 @@ async def on_ready():
 # ---------------------------
 # SLASH COMMANDS
 # ---------------------------
+
 @tree.command(name="ask", description="Ask LazyAI")
 async def ask(interaction: discord.Interaction, prompt: str):
     await interaction.response.defer()
-
     uid = str(interaction.user.id)
     cid = interaction.channel.id
 
-    user_memory.setdefault(uid, []).append({"role": "user", "content": prompt})
+    if cid in adult_channels:
+        msgs = get_adult_messages(cid, uid)
+        msgs.append({"role": "user", "content": prompt})
+        model = get_model_name(uid, cid)
+        personality = get_personality(uid, cid)
+        reply = await query_hf(msgs, model, personality, uid)
+        msgs.append({"role": "assistant", "content": reply})
+        save_adult_memory()
+        return await interaction.followup.send(f"🧠 {reply}", view=LazyAIButtons(uid, prompt, cid))
 
+    user_memory.setdefault(uid, []).append({"role": "user", "content": prompt})
     model = get_model_name(uid, cid)
     personality = get_personality(uid, cid)
-
-    reply = await query_hf(user_memory[uid], model, personality)
+    reply = await query_hf(user_memory[uid], model, personality, uid)
     user_memory[uid].append({"role": "assistant", "content": reply})
     save_memory()
 
-    await interaction.followup.send(
-        f"🧠 {reply}",
-        view=LazyAIButtons(uid, prompt, cid)
-    )
+    await interaction.followup.send(f"🧠 {reply}", view=LazyAIButtons(uid, prompt, cid))
 
-@tree.command(name="set-model", description="Choose model")
+@tree.command(name="set_model", description="Choose model")
 async def set_model(interaction: discord.Interaction):
     embed = discord.Embed(
         title="Choose your LazyAI model",
-        description="Select from the dropdown.",
+        description="Select your model.",
         color=discord.Color.blurple()
     )
-    embed.add_field(
-        name="Current",
-        value=get_model_name(str(interaction.user.id)),
-        inline=False
-    )
-    await interaction.response.send_message(
-        embed=embed,
-        view=ModelView(str(interaction.user.id)),
-        ephemeral=True
-    )
+    embed.add_field(name="Current", value=get_model_name(str(interaction.user.id)))
+    await interaction.response.send_message(embed=embed, view=ModelView(str(interaction.user.id)), ephemeral=True)
 
-@tree.command(name="set-prefix", description="Set prefix")
+@tree.command(name="set_prefix", description="Set prefix")
 async def set_prefix(interaction: discord.Interaction, prefix: str):
     if not interaction.guild_id:
-        return await interaction.response.send_message("Use in a server.", ephemeral=True)
+        return await interaction.response.send_message("Use inside a server.", ephemeral=True)
 
     prefixes[str(interaction.guild_id)] = prefix.lower()
     save_memory()
     await interaction.response.send_message(f"Prefix set to `{prefix}`")
 
-@tree.command(name="set-autoreply-channel", description="Enable autor")
-async def set_auto(interaction: discord.Interaction):
+@tree.command(name="set_autoreply_channel", description="Enable auto reply here")
+async def set_autoreply(interaction: discord.Interaction):
     auto_reply_channels.add(interaction.channel_id)
     save_memory()
-    await interaction.response.send_message("Auto-reply enabled here.")
+    await interaction.response.send_message("Auto-reply enabled.")
 
-@tree.command(name="set-auto-reply-coding", description="Enable coding auto reply")
+@tree.command(name="set_auto_reply_coding", description="Coding auto reply")
 async def set_auto_coding(interaction: discord.Interaction):
     coding_channels.add(interaction.channel_id)
     save_memory()
     await interaction.response.send_message("Coding auto-reply enabled.")
 
-@tree.command(name="change-personality", description="Change personality")
+@tree.command(name="change_personality", description="Change personality")
 async def change_personality(interaction: discord.Interaction, personality: str):
     uid = str(interaction.user.id)
     user_personalities[uid] = personality
     save_memory()
     await interaction.response.send_message(f"Personality set to `{personality}`")
 
-@tree.command(name="auto-reply-18", description="Enable 18+ mode in this channel")
+@tree.command(name="auto_reply_18", description="Enable 18+ mode here")
 async def adult_mode(interaction: discord.Interaction):
-    ch = interaction.channel_id
-    adult_channels.add(ch)
+    cid = interaction.channel_id
+    adult_channels.add(cid)
     save_memory()
-    await interaction.response.send_message(
-        "🔞 This channel is now **18+ mode**.\n"
-        "• Unrestricted model (LazyV..-.-)\n"
-        "• Brutal honesty, profanity allowed\n"
-        "• Roasting enabled\n"
-        "• Still Discord TOS safe"
-    )
+    await interaction.response.send_message("🔞 Channel set to 18+ brutal mode.")
 
-@tree.command(name="link-whatsapp", description="Link WhatsApp")
-@app_commands.describe(phone_number="Format: 9665XXXXXXXX")
+@tree.command(name="link_whatsapp", description="Link your WhatsApp")
+@app_commands.describe(phone_number="Example: 9665XXXXXXXX")
 async def link_whatsapp(interaction: discord.Interaction, phone_number: str):
     uid = str(interaction.user.id)
-
     linked_accounts[uid] = f"whatsapp:{phone_number}"
     whatsapp_users[phone_number] = {
         "linked_discord": uid,
@@ -360,31 +406,31 @@ async def link_whatsapp(interaction: discord.Interaction, phone_number: str):
     save_memory()
     await interaction.response.send_message(f"Linked WhatsApp `{phone_number}`.", ephemeral=True)
 
-@tree.command(name="clear-memory", description="Clear your AI memory")
-async def clear_memory(interaction: discord.Interaction):
+@tree.command(name="clear_memory", description="Clear your memory")
+async def clear_memory_cmd(interaction: discord.Interaction):
     uid = str(interaction.user.id)
     user_memory.pop(uid, None)
     save_memory()
-    await interaction.response.send_message("Memory cleared.")
+    await interaction.response.send_message("Normal memory cleared.")
 
-@tree.command(name="help", description="Show commands")
+@tree.command(name="help", description="Commands")
 async def help_cmd(interaction: discord.Interaction):
-    txt = (
-        "**LazyAI Command List**\n"
+    text = (
+        "**LazyAI Commands**\n"
         "/ask\n"
-        "/set-model\n"
-        "/set-prefix\n"
-        "/set-autoreply-channel\n"
-        "/set-auto-reply-coding\n"
-        "/change-personality\n"
-        "/auto-reply-18+\n"
-        "/link-whatsapp\n"
-        "/clear-memory\n"
+        "/set_model\n"
+        "/set_prefix\n"
+        "/set_autoreply_channel\n"
+        "/set_auto_reply_coding\n"
+        "/change_personality\n"
+        "/auto_reply_18\n"
+        "/link_whatsapp\n"
+        "/clear_memory\n"
         "!lazy\n"
         "!sayto\n"
         "!ping\n"
     )
-    await interaction.response.send_message(txt, ephemeral=True)
+    await interaction.response.send_message(text, ephemeral=True)
 
 # ---------------------------
 # MESSAGE HANDLER
@@ -398,9 +444,7 @@ async def on_message(message):
     gid = str(message.guild.id) if message.guild else None
     content = message.content
 
-    print(f"[MSG] {message.author} -> {content}")
-
-    if message.channel.id in auto_reply_channels or message.channel.id in coding_channels or message.channel.id in adult_channels:
+    if message.channel.id in adult_channels or message.channel.id in auto_reply_channels or message.channel.id in coding_channels:
         return await handle_message(message, content)
 
     if gid:
@@ -415,19 +459,24 @@ async def handle_message(message, prompt):
     uid = str(message.author.id)
     cid = message.channel.id
 
-    user_memory.setdefault(uid, []).append({"role": "user", "content": prompt})
+    if cid in adult_channels:
+        msgs = get_adult_messages(cid, uid)
+        msgs.append({"role": "user", "content": prompt})
+        model = get_model_name(uid, cid)
+        personality = get_personality(uid, cid)
+        reply = await query_hf(msgs, model, personality, uid)
+        msgs.append({"role": "assistant", "content": reply})
+        save_adult_memory()
+        return await message.channel.send(f"🧠 {reply}", view=LazyAIButtons(uid, prompt, cid))
 
+    user_memory.setdefault(uid, []).append({"role": "user", "content": prompt})
     model = get_model_name(uid, cid)
     personality = get_personality(uid, cid)
-
-    reply = await query_hf(user_memory[uid], model, personality)
+    reply = await query_hf(user_memory[uid], model, personality, uid)
     user_memory[uid].append({"role": "assistant", "content": reply})
     save_memory()
 
-    await message.channel.send(
-        f"🧠 {reply}",
-        view=LazyAIButtons(uid, prompt, cid)
-    )
+    await message.channel.send(f"🧠 {reply}", view=LazyAIButtons(uid, prompt, cid))
 
 # ---------------------------
 # LEGACY COMMANDS
@@ -441,42 +490,51 @@ async def lazy_cmd(ctx, *, prompt: str):
     uid = str(ctx.author.id)
     cid = ctx.channel.id
 
+    if cid in adult_channels:
+        msgs = get_adult_messages(cid, uid)
+        msgs.append({"role": "user", "content": prompt})
+        model = get_model_name(uid, cid)
+        personality = get_personality(uid, cid)
+        reply = await query_hf(msgs, model, personality, uid)
+        msgs.append({"role": "assistant", "content": reply})
+        save_adult_memory()
+        return await ctx.send(f"🧠 {reply}", view=LazyAIButtons(uid, prompt, cid))
+
+    user_memory.setdefault(uid, []).append({"role": "user", "content": prompt})
     model = get_model_name(uid, cid)
     personality = get_personality(uid, cid)
-
-    ctx_message = await ctx.send("Thinking…")
-    user_memory.setdefault(uid, []).append({"role": "user", "content": prompt})
-
-    reply = await query_hf(user_memory[uid], model, personality)
+    reply = await query_hf(user_memory[uid], model, personality, uid)
     user_memory[uid].append({"role": "assistant", "content": reply})
     save_memory()
 
-    await ctx_message.edit(
-        content=f"🧠 {reply}",
-        view=LazyAIButtons(uid, prompt, cid)
-    )
+    await ctx.send(f"🧠 {reply}", view=LazyAIButtons(uid, prompt, cid))
 
 @bot.command(name="sayto")
 async def say_to(ctx, user: discord.User, *, msg: str):
     uid = str(ctx.author.id)
     cid = ctx.channel.id
 
-    model = get_model_name(uid, cid)
-    personality = get_personality(uid, cid)
+    if cid in adult_channels:
+        msgs = get_adult_messages(cid, uid)
+        msgs.append({"role": "user", "content": msg})
+        model = get_model_name(uid, cid)
+        personality = get_personality(uid, cid)
+        reply = await query_hf(msgs, model, personality, uid)
+        msgs.append({"role": "assistant", "content": reply})
+        save_adult_memory()
+        return await ctx.send(f"<@{user.id}> 🧠 {reply}", view=LazyAIButtons(uid, msg, cid))
 
     user_memory.setdefault(uid, []).append({"role": "user", "content": msg})
-
-    reply = await query_hf(user_memory[uid], model, personality)
+    model = get_model_name(uid, cid)
+    personality = get_personality(uid, cid)
+    reply = await query_hf(user_memory[uid], model, personality, uid)
     user_memory[uid].append({"role": "assistant", "content": reply})
     save_memory()
 
-    await ctx.send(
-        f"<@{user.id}> LazyAI says:\n{reply}",
-        view=LazyAIButtons(uid, msg, cid)
-    )
+    await ctx.send(f"<@{user.id}> 🧠 {reply}", view=LazyAIButtons(uid, msg, cid))
 
 # ---------------------------
-# RUN
+# RUN BOT
 # ---------------------------
 if __name__ == "__main__":
     if not DISCORD_TOKEN or not HF_TOKEN:
