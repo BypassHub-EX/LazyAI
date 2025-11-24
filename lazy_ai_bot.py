@@ -332,7 +332,7 @@ async def change_personality(interaction: discord.Interaction, personality: str)
     save_memory()
     await interaction.response.send_message(f"Personality set to `{personality}`")
 
-@tree.command(name="auto-reply-18+", description="Enable 18+ mode in this channel")
+@tree.command(name="auto-reply-18", description="Enable 18+ mode in this channel")
 async def adult_mode(interaction: discord.Interaction):
     ch = interaction.channel_id
     adult_channels.add(ch)
