@@ -2,8 +2,6 @@ import os
 import json
 import aiohttp
 import discord
-import asyncio
-import datetime
 from discord.ext import commands
 from discord import app_commands
 from discord.ui import View, Button
@@ -55,8 +53,9 @@ def save_json(path, data):
         json.dump(data, f, ensure_ascii=False, indent=2)
 
 def load_memory():
-    global user_memory, prefixes, auto_reply_channels, coding_channels, dm_autoreply_users
-    global adult_channels, user_personalities, user_models, linked_accounts, whatsapp_users
+    global user_memory, prefixes, auto_reply_channels, coding_channels
+    global dm_autoreply_users, adult_channels, user_personalities
+    global user_models, linked_accounts, whatsapp_users
 
     d = load_json(MEMORY_FILE, {})
     user_memory = d.get("user_memory", {})
@@ -92,14 +91,9 @@ def save_adult_memory():
     save_json(ADULT_MEMORY_FILE, adult_memory)
 
 def sanitize(text):
-    return text.replace("@everyone", "@-everyone").replace("@here", "@-here")
-
-def stylize(text):
     if not text:
         return text
-    lines = text.split("\n")
-    lines[0] = "# " + lines[0]
-    return sanitize("\n".join(lines))
+    return text.replace("@everyone", "@-everyone").replace("@here", "@-here")
 
 def get_adult_bucket(channel_id, user_id):
     c = str(channel_id)
@@ -110,81 +104,81 @@ def get_adult_bucket(channel_id, user_id):
     return adult_memory["channels"][c]["users"][u]
 
 def get_model(uid, cid):
-    if str(cid) in adult_channels:
+    if cid in adult_channels:
         return "LazyV..-.-"
-    return user_models.get(str(uid), "LazyV.----")
+    return user_models.get(uid, "LazyV.----")
 
 def get_personality(uid, cid):
-    if str(uid) == OWNER_ID:
-        return "dominant, authoritative, sharp"
-    if str(cid) in adult_channels:
-        return "explicit, aggressive, swearing, roasting, sexual but helpful, no roleplay, no stage directions"
-    return user_personalities.get(str(uid), "casual")
+    if uid == OWNER_ID:
+        return "dominant, sharp, direct"
+    if cid in adult_channels:
+        return (
+            "extremely blunt, aggressive, heavy swearing, sexual, roasting, mocking, humiliating stupidity, "
+            "no roleplay, no actions, no stage directions, still helpful, answers directly"
+        )
+    return user_personalities.get(uid, "casual")
 
 def system_prompt(model, personality):
     return (
         f"You are {model}, an AI by Xohus Interactive LLC (https://xohus.me). "
         f"Personality: {personality}. "
-        "Be helpful. No roleplay actions. No stage directions. "
-        "Never ping @everyone or @here. "
-        "Structure replies using markdown."
+        "Never roleplay. Never describe actions. Never soften language. "
+        "Do not use formatting headers. Do not censor yourself unnecessarily. "
+        "Never output @everyone or @here."
     )
 
 async def query_hf(messages, model, personality):
     payload = {
         "model": HF_MODEL,
-        "messages": [{"role": "system", "content": system_prompt(model, personality)}] + messages[-12:]
+        "messages": [{"role": "system", "content": system_prompt(model, personality)}] + messages[-14:]
     }
     async with aiohttp.ClientSession() as s:
         async with s.post(API_URL, headers={"Authorization": f"Bearer {HF_TOKEN}"}, json=payload) as r:
             if r.status != 200:
                 return "LazyAI error."
             data = await r.json()
-            return stylize(data["choices"][0]["message"]["content"])
+            return sanitize(data["choices"][0]["message"]["content"])
 
 class ActionButtons(View):
-    def __init__(self, uid, prompt):
+    def __init__(self, uid, prompt, cid):
         super().__init__(timeout=None)
         self.uid = uid
         self.prompt = prompt
+        self.cid = cid
 
     @discord.ui.button(label="Regenerate", style=discord.ButtonStyle.primary)
-    async def regen(self, i: discord.Interaction, _):
-        if str(i.user.id) != self.uid:
-            return await i.response.send_message("Not yours.", ephemeral=True)
-        msgs = user_memory.get(self.uid, [])
+    async def regen(self, interaction, _):
+        if str(interaction.user.id) != self.uid:
+            return await interaction.response.send_message("Not yours.", ephemeral=True)
+
+        msgs = get_adult_bucket(self.cid, self.uid) if self.cid in adult_channels else user_memory.setdefault(self.uid, [])
         msgs.append({"role": "user", "content": self.prompt})
-        reply = await query_hf(msgs, get_model(self.uid, i.channel_id), get_personality(self.uid, i.channel_id))
+
+        reply = await query_hf(msgs, get_model(self.uid, self.cid), get_personality(self.uid, self.cid))
         msgs.append({"role": "assistant", "content": reply})
-        save_memory()
-        await i.response.edit_message(content=reply, view=self)
+
+        save_adult_memory() if self.cid in adult_channels else save_memory()
+        await interaction.response.edit_message(content=reply, view=self)
 
     @discord.ui.button(label="Delete", style=discord.ButtonStyle.danger)
-    async def delete(self, i: discord.Interaction, _):
-        if str(i.user.id) == self.uid:
-            await i.message.delete()
+    async def delete(self, interaction, _):
+        if str(interaction.user.id) == self.uid:
+            await interaction.message.delete()
 
 @tree.command(name="ask")
-async def ask(inter: discord.Interaction, prompt: str):
+async def ask(inter, prompt: str):
     await inter.response.defer()
     uid = str(inter.user.id)
     cid = str(inter.channel_id)
 
-    if cid in adult_channels:
-        msgs = get_adult_bucket(cid, uid)
-    else:
-        msgs = user_memory.setdefault(uid, [])
-
+    msgs = get_adult_bucket(cid, uid) if cid in adult_channels else user_memory.setdefault(uid, [])
     msgs.append({"role": "user", "content": prompt})
+
     reply = await query_hf(msgs, get_model(uid, cid), get_personality(uid, cid))
     msgs.append({"role": "assistant", "content": reply})
 
-    if cid in adult_channels:
-        save_adult_memory()
-    else:
-        save_memory()
-
-    await inter.followup.send(reply, view=ActionButtons(uid, prompt))
+    save_adult_memory() if cid in adult_channels else save_memory()
+    await inter.followup.send(reply, view=ActionButtons(uid, prompt, cid))
 
 @tree.command(name="set-model")
 async def set_model(inter, model: str):
@@ -226,7 +220,7 @@ async def set_dm(inter):
 async def set_18(inter):
     adult_channels.add(str(inter.channel_id))
     save_memory()
-    await inter.response.send_message("18+ mode enabled here.")
+    await inter.response.send_message("18+ mode enabled.")
 
 @tree.command(name="link-whatsapp")
 async def link_ws(inter, phone: str):
@@ -244,10 +238,10 @@ async def clear_mem(inter):
 @tree.command(name="help")
 async def help_cmd(inter):
     await inter.response.send_message(
-        "/ask\n/set-model\n/change-personality\n/set-prefix\n"
-        "/set-autoreply-channel\n/set-auto-reply-coding\n"
-        "/set-auto-reply-dms\n/auto-reply-18\n"
-        "/link-whatsapp\n/clear-memory",
+        "/ask /set-model /change-personality /set-prefix\n"
+        "/set-autoreply-channel /set-auto-reply-coding\n"
+        "/set-auto-reply-dms /auto-reply-18\n"
+        "/link-whatsapp /clear-memory",
         ephemeral=True
     )
 
@@ -262,38 +256,31 @@ async def on_message(msg):
     text = msg.content.strip()
 
     if msg.guild is None and uid in dm_autoreply_users:
-        await ask_message(msg, text)
+        await handle_msg(msg, text)
         return
 
     if cid in auto_reply_channels or cid in coding_channels or cid in adult_channels:
-        await ask_message(msg, text)
+        await handle_msg(msg, text)
         return
 
     if gid and prefixes.get(gid) and text.lower().startswith(prefixes[gid]):
-        await ask_message(msg, text[len(prefixes[gid]):].strip())
+        await handle_msg(msg, text[len(prefixes[gid]):].strip())
         return
 
     await bot.process_commands(msg)
 
-async def ask_message(msg, prompt):
+async def handle_msg(msg, prompt):
     uid = str(msg.author.id)
     cid = str(msg.channel.id)
 
-    if cid in adult_channels:
-        msgs = get_adult_bucket(cid, uid)
-    else:
-        msgs = user_memory.setdefault(uid, [])
-
+    msgs = get_adult_bucket(cid, uid) if cid in adult_channels else user_memory.setdefault(uid, [])
     msgs.append({"role": "user", "content": prompt})
+
     reply = await query_hf(msgs, get_model(uid, cid), get_personality(uid, cid))
     msgs.append({"role": "assistant", "content": reply})
 
-    if cid in adult_channels:
-        save_adult_memory()
-    else:
-        save_memory()
-
-    await msg.channel.send(reply)
+    save_adult_memory() if cid in adult_channels else save_memory()
+    await msg.channel.send(reply, view=ActionButtons(uid, prompt, cid))
 
 @bot.event
 async def on_ready():
