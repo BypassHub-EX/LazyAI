@@ -18,7 +18,7 @@ DISCORD_TOKEN = os.getenv("DISCORD_TOKEN", "")
 HF_TOKEN = os.getenv("HF_TOKEN", "")
 
 API_URL = "https://router.huggingface.co/v1/chat/completions"
-HF_MODEL = "deepseek-ai/DeepSeek-V4-Flash"
+HF_MODEL = "Qwen/Qwen3.6-27B"
 
 MEMORY_FILE = "memory.json"
 ADULT_MEMORY_FILE = "18mem.json"
